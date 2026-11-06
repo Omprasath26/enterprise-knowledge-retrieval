@@ -1,0 +1,39 @@
+
+
+# Enterprise Knowledge Retrieval & RAG Assistant
+# Python 3.11 | CPU-based embedding inference
+
+
+# 1. Document ingestion and processing
+docling
+pandas
+numpy
+
+# 2. Hugging Face embeddings
+sentence-transformers
+
+# 3. Vector database
+qdrant-client
+
+# 4. Backend API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# 5. LLM integration
+openai
+
+# 6. Configuration and environment
+pydantic-settings
+python-dotenv
+
+# 7. Caching
+redis
+
+# 8. Testing
+pytest
+httpx
+xlwt
+xlrd
+openpyxl
+

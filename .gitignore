@@ -33,3 +33,6 @@ dist/
 # Operating system files
 .DS_Store
 Thumbs.db
+  
+# sample PDF file used for testing, not part of the source code
+IT_Industry_HR_Policies.pdf
