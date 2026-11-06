@@ -5,12 +5,7 @@ import numpy as np
 import pytest
 
 from backend.ingestion.embedding_generator import EmbeddedChunk
-from backend.common.vector_store import (
-    DEFAULT_COLLECTION_NAME,
-    DEFAULT_VECTOR_SIZE,
-    QdrantVectorStore,
-    VectorStoreError,
-)
+from backend.common.vector_store import (DEFAULT_COLLECTION_NAME,DEFAULT_VECTOR_SIZE,QdrantVectorStore,VectorStoreError)
 
 
 class FakeQdrantClient:
@@ -59,6 +54,8 @@ def sample_embedded_chunks():
             headings=["HR Policies", "Leave Policy"],
             page_numbers=[2],
             access_tags=["HR"],
+            document_id="test-hr-policy",
+            document_version="a" * 64,
         ),
         EmbeddedChunk(
             chunk_index=1,
@@ -75,6 +72,8 @@ def sample_embedded_chunks():
             headings=["HR Policies", "Information Security"],
             page_numbers=[3],
             access_tags=["HR", "IT"],
+            document_id="test-hr-policy",
+            document_version="a" * 64,
         ),
     ]
 
@@ -132,6 +131,8 @@ def test_batch_insert_preserves_payload(sample_embedded_chunks):
     assert payload["headings"] == ["HR Policies", "Leave Policy"]
     assert payload["access_tags"] == ["HR"]
     assert payload["embedding_model"] == "BAAI/bge-m3"
+    assert payload["document_id"] == "test-hr-policy"
+    assert payload["document_version"] == "a" * 64
 
 
 def test_stored_vectors_have_expected_dimensions(sample_embedded_chunks):
@@ -165,6 +166,34 @@ def test_duplicate_chunk_identity_uses_same_point_id(sample_embedded_chunks):
     second_ids = [point.id for point in client.upserted_points]
 
     assert first_ids == second_ids
+
+
+def test_different_document_versions_produce_different_point_ids(
+    sample_embedded_chunks,
+):
+    first_chunk = sample_embedded_chunks[0]
+
+    first_id = QdrantVectorStore._create_point_id(first_chunk)
+
+    first_chunk.document_version = "b" * 64
+
+    second_id = QdrantVectorStore._create_point_id(first_chunk)
+
+    assert first_id != second_id
+
+
+def test_different_document_ids_produce_different_point_ids(
+    sample_embedded_chunks,
+):
+    first_chunk = sample_embedded_chunks[0]
+
+    first_id = QdrantVectorStore._create_point_id(first_chunk)
+
+    first_chunk.document_id = "another-hr-policy"
+
+    second_id = QdrantVectorStore._create_point_id(first_chunk)
+
+    assert first_id != second_id
 
 
 def test_rejects_wrong_vector_dimension(sample_embedded_chunks):

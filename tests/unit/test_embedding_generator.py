@@ -1,12 +1,12 @@
 
-
-
 import numpy as np
 import pytest
 
 from backend.ingestion.document_chunker import DocumentChunk
-from backend.ingestion.embedding_generator import (DocumentEmbeddingError,DocumentEmbeddingGenerator)
-
+from backend.ingestion.embedding_generator import (
+    DocumentEmbeddingError,
+    DocumentEmbeddingGenerator,
+)
 
 
 class FakeEmbeddingModel:
@@ -50,6 +50,8 @@ def sample_chunks():
             source_file="HR_Policy.pdf",
             file_extension=".pdf",
             access_tags=["HR"],
+            document_id="test-hr-policy",
+            document_version="a" * 64,
         ),
         DocumentChunk(
             chunk_index=1,
@@ -63,6 +65,8 @@ def sample_chunks():
             source_file="HR_Policy.pdf",
             file_extension=".pdf",
             access_tags=["HR", "IT"],
+            document_id="test-hr-policy",
+            document_version="a" * 64,
         ),
     ]
 
@@ -125,6 +129,8 @@ def test_chunk_metadata_is_preserved(sample_chunks):
     assert first.headings == ["IT Industry HR Policies", "Leave Policy"]
     assert first.page_numbers == [2]
     assert first.access_tags == ["HR"]
+    assert first.document_id == "test-hr-policy"
+    assert first.document_version == "a" * 64
     assert first.text == sample_chunks[0].text
     assert first.contextualized_text == sample_chunks[0].contextualized_text
 

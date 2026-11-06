@@ -1,7 +1,7 @@
 
-
 from dataclasses import dataclass
 from typing import Any, Sequence
+import re
 
 import numpy as np
 from qdrant_client import QdrantClient, models
@@ -28,6 +28,9 @@ class RetrievedChunk:
     headings: list[str]
     page_numbers: list[int]
     relevance_score: float
+    document_id: str
+    document_version: str
+    chunk_id: str
 
 
 class DocumentRetriever:
@@ -49,7 +52,7 @@ class DocumentRetriever:
         if top_k <= 0:
             raise ValueError("top_k must be greater than zero.")
 
-        if not collection_name.strip():
+        if not isinstance(collection_name, str) or not collection_name.strip():
             raise ValueError("Collection name cannot be empty.")
 
         self.collection_name = collection_name
@@ -63,10 +66,7 @@ class DocumentRetriever:
                 model_name,
                 device=device,
             )
-
-            self.embedding_dimension = (
-                self.model.get_embedding_dimension()
-            )
+            self.embedding_dimension = self.model.get_embedding_dimension()
 
         except Exception as exc:
             raise RetrievalError(
@@ -74,8 +74,7 @@ class DocumentRetriever:
             ) from exc
 
     @staticmethod
-    def _validate_access_tags(
-        allowed_access_tags: Sequence[str]) -> list[str]:
+    def _validate_access_tags(allowed_access_tags: Sequence[str]) -> list[str]:
         if isinstance(allowed_access_tags, (str, bytes)):
             raise ValueError(
                 "Access tags must be a sequence of tag strings."
@@ -90,10 +89,30 @@ class DocumentRetriever:
 
         if any(
             not isinstance(tag, str) or not tag.strip()
-            for tag in tags):
+            for tag in tags
+        ):
             raise ValueError("Access tags must be non-empty strings.")
 
         return list(dict.fromkeys(tags))
+
+    @staticmethod
+    def _valid_provenance(
+        document_id: Any,
+        document_version: Any,
+        chunk_id: Any) -> bool:
+        """Return False when a point lacks trustworthy version provenance."""
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (document_id, document_version, chunk_id)
+        ):
+            return False
+
+        version = document_version.strip()
+
+        return (
+            len(version) == 64
+            and re.fullmatch(r"[0-9a-fA-F]{64}", version) is not None
+        )
 
     def _generate_query_embedding(self, question: str) -> list[float]:
         if not isinstance(question, str) or not question.strip():
@@ -132,7 +151,7 @@ class DocumentRetriever:
         self,
         question: str,
         allowed_access_tags: Sequence[str]) -> list[RetrievedChunk]:
-        """Retrieve only chunks authorized by the supplied access tags.
+        """Retrieve authorized chunks with complete document provenance.
 
         Access tags must come from a trusted authorization layer.
         Do not accept client-supplied tags as proof of authorization.
@@ -171,11 +190,24 @@ class DocumentRetriever:
             for point in response.points:
                 payload = point.payload or {}
 
-                # Fail closed if required source metadata is missing.
                 source_file = payload.get("source_file")
                 text = payload.get("contextualized_text")
+                document_id = payload.get("document_id")
+                document_version = payload.get("document_version")
+                chunk_id = point.id
 
-                if not source_file or not text:
+                # Fail closed if source data or provenance is incomplete.
+                if not isinstance(source_file, str) or not source_file.strip():
+                    continue
+
+                if not isinstance(text, str) or not text.strip():
+                    continue
+
+                if not self._valid_provenance(
+                    document_id,
+                    document_version,
+                    chunk_id,
+                ):
                     continue
 
                 results.append(
@@ -186,6 +218,9 @@ class DocumentRetriever:
                         headings=payload.get("headings") or [],
                         page_numbers=payload.get("page_numbers") or [],
                         relevance_score=float(point.score),
+                        document_id=document_id.strip(),
+                        document_version=document_version.strip().lower(),
+                        chunk_id=str(chunk_id),
                     )
                 )
 

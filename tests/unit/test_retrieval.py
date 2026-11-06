@@ -1,6 +1,4 @@
 
-
-
 from types import SimpleNamespace
 
 import numpy as np
@@ -71,6 +69,8 @@ def sample_point():
             "headings": ["Leave Policy"],
             "page_numbers": [2],
             "access_tags": ["hr"],
+            "document_id": "test-hr-policy",
+            "document_version": "a" * 64,
         },
     )
 
@@ -124,6 +124,11 @@ def test_retrieves_relevant_chunks(retriever):
     assert results[0].chunk_index == 2
     assert results[0].relevance_score == 0.85
     assert client.query_arguments is not None
+
+    # Verify document provenance metadata.
+    assert results[0].document_id == "test-hr-policy"
+    assert results[0].document_version == "a" * 64
+    assert results[0].chunk_id == "test-point-1"
 
 
 def test_permission_filter_is_applied(retriever):
@@ -194,6 +199,21 @@ def test_source_metadata_is_preserved(retriever):
     assert result.page_numbers == [2]
 
 
+def test_document_provenance_metadata_is_preserved(retriever):
+    instance, _, _ = retriever
+
+    results = instance.retrieve(
+        "What is the leave policy?",
+        ["hr"],
+    )
+
+    result = results[0]
+
+    assert result.document_id == "test-hr-policy"
+    assert result.document_version == "a" * 64
+    assert result.chunk_id == "test-point-1"
+
+
 def test_missing_source_metadata_is_rejected(retriever):
     instance, client, _ = retriever
 
@@ -202,7 +222,9 @@ def test_missing_source_metadata_is_rejected(retriever):
             id="invalid-point",
             score=0.9,
             payload={
-                "contextualized_text": "Some document text."
+                "contextualized_text": "Some document text.",
+                "document_id": "test-doc",
+                "document_version": "a" * 64,
             },
         )
     ]
@@ -223,7 +245,148 @@ def test_missing_text_metadata_is_rejected(retriever):
             id="invalid-point",
             score=0.9,
             payload={
-                "source_file": "policy.pdf"
+                "source_file": "policy.pdf",
+                "document_id": "test-doc",
+                "document_version": "a" * 64,
+            },
+        )
+    ]
+
+    results = instance.retrieve(
+        "Find information",
+        ["hr"],
+    )
+
+    assert results == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "document_id": None,
+            "document_version": "a" * 64,
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": None,
+        },
+        {
+            "document_id": "",
+            "document_version": "a" * 64,
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": "",
+        },
+        {
+            "document_id": "   ",
+            "document_version": "a" * 64,
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": "invalid",
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": "g" * 64,
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": "a" * 63,
+        },
+        {
+            "document_id": "test-doc",
+            "document_version": "a" * 65,
+        },
+    ],
+)
+def test_skips_points_with_invalid_provenance(retriever, metadata):
+    instance, client, _ = retriever
+
+    client.points = [
+        SimpleNamespace(
+            id="invalid-provenance-point",
+            score=0.9,
+            payload={
+                "source_file": "policy.pdf",
+                "contextualized_text": "Some document text.",
+                "document_id": metadata["document_id"],
+                "document_version": metadata["document_version"],
+            },
+        )
+    ]
+
+    results = instance.retrieve(
+        "Find information",
+        ["hr"],
+    )
+
+    assert results == []
+
+
+def test_skips_points_without_chunk_id(retriever):
+    instance, client, _ = retriever
+
+    client.points = [
+        SimpleNamespace(
+            id=None,
+            score=0.9,
+            payload={
+                "source_file": "policy.pdf",
+                "contextualized_text": "Some document text.",
+                "document_id": "test-doc",
+                "document_version": "a" * 64,
+            },
+        )
+    ]
+
+    results = instance.retrieve(
+        "Find information",
+        ["hr"],
+    )
+
+    assert results == []
+
+
+def test_preserves_normalized_document_version(retriever):
+    instance, client, _ = retriever
+
+    client.points = [
+        SimpleNamespace(
+            id="test-point-2",
+            score=0.9,
+            payload={
+                "source_file": "policy.pdf",
+                "contextualized_text": "Some document text.",
+                "document_id": "test-doc",
+                "document_version": "A" * 64,
+            },
+        )
+    ]
+
+    results = instance.retrieve(
+        "Find information",
+        ["hr"],
+    )
+
+    assert len(results) == 1
+    assert results[0].document_version == "a" * 64
+
+
+def test_legacy_points_without_version_are_rejected(retriever):
+    """Old Qdrant points must not enter evidence-based cache isolation."""
+
+    instance, client, _ = retriever
+
+    client.points = [
+        SimpleNamespace(
+            id="legacy-point",
+            score=0.9,
+            payload={
+                "source_file": "old-policy.pdf",
+                "contextualized_text": "Legacy document text.",
+                "document_id": "legacy-doc",
             },
         )
     ]
@@ -285,7 +448,8 @@ def test_rejects_non_finite_embedding(retriever):
 
     with pytest.raises(
         RetrievalError,
-        match="non-finite"):
+        match="non-finite",
+    ):
         instance._generate_query_embedding("Test question")
 
 
