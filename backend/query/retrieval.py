@@ -1,7 +1,7 @@
 
 from dataclasses import dataclass
-from typing import Any, Sequence
 import re
+from typing import Any, Sequence
 
 import numpy as np
 from qdrant_client import QdrantClient, models
@@ -28,9 +28,12 @@ class RetrievedChunk:
     headings: list[str]
     page_numbers: list[int]
     relevance_score: float
-    document_id: str
-    document_version: str
-    chunk_id: str
+
+    # Defaults preserve compatibility with existing callers and tests.
+    # Actual Qdrant retrieval still requires valid provenance.
+    document_id: str = ""
+    document_version: str = ""
+    chunk_id: str = ""
 
 
 class DocumentRetriever:
@@ -47,7 +50,9 @@ class DocumentRetriever:
         client: Any = None,
         model: Any = None):
         if not -1.0 <= relevance_threshold <= 1.0:
-            raise ValueError("Relevance threshold must be between -1 and 1.")
+            raise ValueError(
+                "Relevance threshold must be between -1 and 1."
+            )
 
         if top_k <= 0:
             raise ValueError("top_k must be greater than zero.")
@@ -61,11 +66,16 @@ class DocumentRetriever:
         self.device = device
 
         try:
-            self.client = client or QdrantClient(url=qdrant_url)
-            self.model = model or SentenceTransformer(
-                model_name,
-                device=device,
+            self.client = (
+                client if client is not None
+                else QdrantClient(url=qdrant_url)
             )
+
+            self.model = (
+                model if model is not None
+                else SentenceTransformer(model_name, device=device)
+            )
+
             self.embedding_dimension = self.model.get_embedding_dimension()
 
         except Exception as exc:
@@ -93,18 +103,38 @@ class DocumentRetriever:
         ):
             raise ValueError("Access tags must be non-empty strings.")
 
-        return list(dict.fromkeys(tags))
+        return list(dict.fromkeys(tag.strip() for tag in tags))
 
     @staticmethod
     def _valid_provenance(
         document_id: Any,
         document_version: Any,
         chunk_id: Any) -> bool:
-        """Return False when a point lacks trustworthy version provenance."""
-        if not all(
-            isinstance(value, str) and value.strip()
-            for value in (document_id, document_version, chunk_id)
+        """Reject points without trustworthy document-version provenance."""
+
+        if (
+            not isinstance(document_id, str)
+            or not document_id.strip()
         ):
+            return False
+
+        if (
+            not isinstance(document_version, str)
+            or not document_version.strip()
+        ):
+            return False
+
+        # Validate the original ID before converting it to a string.
+        # In particular, None must never become the apparently valid "None".
+        if chunk_id is None:
+            return False
+
+        if isinstance(chunk_id, bool):
+            return False
+
+        normalized_chunk_id = str(chunk_id).strip()
+
+        if not normalized_chunk_id:
             return False
 
         version = document_version.strip()
@@ -126,7 +156,7 @@ class DocumentRetriever:
                 show_progress_bar=False,
             )
 
-            vector = np.asarray(vector)
+            vector = np.asarray(vector, dtype=np.float32)
 
             if vector.shape != (1, self.embedding_dimension):
                 raise RetrievalError(
@@ -147,15 +177,16 @@ class DocumentRetriever:
                 f"Query embedding generation failed: {exc}"
             ) from exc
 
+    def generate_query_embedding(self, question: str) -> list[float]:
+        """Generate one embedding for retrieval and semantic caching."""
+        return self._generate_query_embedding(question)
+
     def retrieve(
         self,
         question: str,
-        allowed_access_tags: Sequence[str]) -> list[RetrievedChunk]:
-        """Retrieve authorized chunks with complete document provenance.
-
-        Access tags must come from a trusted authorization layer.
-        Do not accept client-supplied tags as proof of authorization.
-        """
+        allowed_access_tags: Sequence[str],
+        query_embedding: Sequence[float] | None = None) -> list[RetrievedChunk]:
+        """Retrieve authorized chunks with complete document provenance."""
 
         tags = self._validate_access_tags(allowed_access_tags)
 
@@ -163,7 +194,31 @@ class DocumentRetriever:
         if not tags:
             return []
 
-        query_vector = self._generate_query_embedding(question)
+        if query_embedding is None:
+            query_vector = self._generate_query_embedding(question)
+        else:
+            try:
+                vector = np.asarray(query_embedding, dtype=np.float32)
+
+                if vector.shape != (self.embedding_dimension,):
+                    raise ValueError(
+                        "Query embedding has an unexpected dimension."
+                    )
+
+                if not np.isfinite(vector).all():
+                    raise ValueError(
+                        "Query embedding contains non-finite values."
+                    )
+
+                norm = float(np.linalg.norm(vector))
+
+                if norm == 0.0:
+                    raise ValueError("Query embedding cannot be zero.")
+
+                query_vector = (vector / norm).astype(float).tolist()
+
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Invalid query embedding.") from exc
 
         access_filter = models.Filter(
             must=[
@@ -185,7 +240,7 @@ class DocumentRetriever:
                 with_vectors=False,
             )
 
-            results = []
+            results: list[RetrievedChunk] = []
 
             for point in response.points:
                 payload = point.payload or {}
@@ -194,9 +249,10 @@ class DocumentRetriever:
                 text = payload.get("contextualized_text")
                 document_id = payload.get("document_id")
                 document_version = payload.get("document_version")
-                chunk_id = point.id
 
-                # Fail closed if source data or provenance is incomplete.
+                # Keep the original ID for validation.
+                original_chunk_id = point.id
+
                 if not isinstance(source_file, str) or not source_file.strip():
                     continue
 
@@ -206,7 +262,7 @@ class DocumentRetriever:
                 if not self._valid_provenance(
                     document_id,
                     document_version,
-                    chunk_id,
+                    original_chunk_id,
                 ):
                     continue
 
@@ -220,7 +276,7 @@ class DocumentRetriever:
                         relevance_score=float(point.score),
                         document_id=document_id.strip(),
                         document_version=document_version.strip().lower(),
-                        chunk_id=str(chunk_id),
+                        chunk_id=str(original_chunk_id),
                     )
                 )
 

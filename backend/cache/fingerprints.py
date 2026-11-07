@@ -1,4 +1,4 @@
-"""Canonical permission and evidence fingerprints for cache isolation."""
+
 
 import hashlib
 import json
